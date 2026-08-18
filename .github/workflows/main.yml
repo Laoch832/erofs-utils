@@ -1,4 +1,4 @@
-name: Build Windows binaries
+name: Build dump.erofs for Windows (MSYS2)
 
 on:
   push:
@@ -8,36 +8,48 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-windows:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-autotools
+            mingw-w64-x86_64-liblz4
+            mingw-w64-x86_64-zlib
 
-    - name: Install dependencies and mingw-w64
-      run: |
-        sudo apt update
-        sudo apt install -y autoconf automake libtool pkg-config \
-          liblz4-dev libzstd-dev liblzma-dev uuid-dev \
-          gcc-mingw-w64-x86-64
+      - name: Clone erofs-utils
+        run: |
+          git clone --depth=1 \
+            https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git \
+            erofs-utils
 
-    - name: Generate configure script
-      run: ./autogen.sh
+      - name: Build dump.erofs
+        run: |
+          cd erofs-utils
+          [ -f configure ] || ./autogen.sh || autoreconf -fi
+          ./configure \
+            --prefix=/mingw64 \
+            --without-uuid \
+            --disable-xattr \
+            --disable-fuse
+          make -C lib -j$(nproc)
+          make -C dump -j$(nproc) dump.erofs || make -C dump -j$(nproc) all
 
-    - name: Configure for Windows cross-compile (disable uuid, disable -Werror)
-      run: |
-        ./configure --host=x86_64-w64-mingw32 \
-                    --without-uuid \
-                    CFLAGS="-Wno-error"
+          mkdir -p out
+          find dump -maxdepth 1 -type f -name 'dump.erofs*' -exec cp {} out/ \;
 
-    - name: Build
-      run: make -j$(nproc)
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: erofs-utils-windows
-        path: |
-          dump/.libs/dump.erofs.exe
-          mkfs/.libs/mkfs.erofs.exe
-          fsck/.libs/fsck.erofs.exe
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dump.erofs-windows-msys2
+          path: erofs-utils/out/dump.erofs*
