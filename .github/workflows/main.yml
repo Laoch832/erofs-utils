@@ -1,4 +1,4 @@
-name: Build dump.erofs for Windows (MSYS2)
+name: Build dump.erofs for Windows (MinGW)
 
 on:
   push:
@@ -9,25 +9,19 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
+    runs-on: ubuntu-24.04
+    env:
+      MINGW_ROOT: ${{ github.workspace }}/mingw-root
 
     steps:
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            base-devel
-            git
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-autotools
-            mingw-w64-x86_64-lz4
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-lzma
-            mingw-w64-x86_64-zstd
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-mingw-w64-x86-64 \
+            g++-mingw-w64-x86-64 \
+            autoconf automake libtool pkg-config \
+            make git ca-certificates gettext
 
       - name: Clone erofs-utils
         run: |
@@ -35,23 +29,468 @@ jobs:
             https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git \
             erofs-utils
 
-      - name: Build dump.erofs
+      - name: Build MinGW lz4
         run: |
+          set -euo pipefail
+          git clone --depth=1 --branch v1.10.0 https://github.com/lz4/lz4.git lz4
+          make -C lz4/lib \
+            CC=x86_64-w64-mingw32-gcc \
+            AR=x86_64-w64-mingw32-ar \
+            liblz4.a
+
+          mkdir -p "$MINGW_ROOT/lib/pkgconfig" "$MINGW_ROOT/include"
+          cp lz4/lib/liblz4.a "$MINGW_ROOT/lib/"
+          cp lz4/lib/lz4.h lz4/lib/lz4frame.h lz4/lib/lz4hc.h "$MINGW_ROOT/include/"
+
+          cat > "$MINGW_ROOT/lib/pkgconfig/lz4.pc" <<EOF
+          prefix=$MINGW_ROOT
+          exec_prefix=\${prefix}
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: lz4
+          Version: 1.10.0
+          Description: LZ4 compression library
+          Libs: -L\${libdir} -llz4
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Create MinGW compatibility layer
+        run: |
+          set -euo pipefail
+          mkdir -p "$MINGW_ROOT/include/erofs" \
+                   "$MINGW_ROOT/include/sys" \
+                   "$MINGW_ROOT/include/linux"
+
+          cat > "$MINGW_ROOT/include/erofs/win32_compat.h" <<'EOF'
+          #ifndef EROFS_WIN32_COMPAT_H
+          #define EROFS_WIN32_COMPAT_H
+
+          #if defined(_WIN32) && !defined(__CYGWIN__)
+
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <io.h>
+          #include <stdint.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <sys/stat.h>
+          #include <sys/types.h>
+          #include <sys/vfs.h>
+
+          #ifndef O_BINARY
+          #define O_BINARY 0
+          #endif
+          #ifndef ENOTSUP
+          #define ENOTSUP EOPNOTSUPP
+          #endif
+          #ifndef ENOTTY
+          #define ENOTTY EOPNOTSUPP
+          #endif
+
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+
+          struct iovec;
+          ssize_t pread(int fd, void *buf, size_t count, uint64_t offset);
+          ssize_t pwrite(int fd, const void *buf, size_t count, uint64_t offset);
+          int fsync(int fd);
+          int fdatasync(int fd);
+          int fstatfs(int fd, struct statfs *buf);
+          int ftruncate(int fd, off_t length);
+          int fallocate(int fd, int mode, uint64_t offset, uint64_t len);
+          int posix_fadvise(int fd, off_t offset, off_t len, int advice);
+          ssize_t readv(int fd, const struct iovec *iov, int iovcnt);
+          ssize_t writev(int fd, const struct iovec *iov, int iovcnt);
+          ssize_t preadv(int fd, const struct iovec *iov, int iovcnt, uint64_t offset);
+          ssize_t pwritev(int fd, const struct iovec *iov, int iovcnt, uint64_t offset);
+          ssize_t lgetxattr(const char *path, const char *name, void *value, size_t size);
+          ssize_t llistxattr(const char *path, char *list, size_t size);
+          int lsetxattr(const char *path, const char *name, const void *value, size_t size, int flags);
+          ssize_t fgetxattr(int fd, const char *name, void *value, size_t size);
+          ssize_t flistxattr(int fd, char *list, size_t size);
+          int fsetxattr(int fd, const char *name, const void *value, size_t size, int flags);
+          int symlink(const char *target, const char *linkpath);
+          int mknod(const char *pathname, mode_t mode, dev_t dev);
+          int mkfifo(const char *pathname, mode_t mode);
+          int win32_ioctl(int fd, unsigned long req, ...);
+          #ifndef ioctl
+          #define ioctl win32_ioctl
+          #endif
+
+          #ifdef __cplusplus
+          }
+          #endif
+
+          #endif /* _WIN32 */
+          #endif /* EROFS_WIN32_COMPAT_H */
+          EOF
+
+          cat > "$MINGW_ROOT/include/sys/uio.h" <<'EOF'
+          #ifndef COMPAT_SYS_UIO_H
+          #define COMPAT_SYS_UIO_H
+          #include <stddef.h>
+          #include <stdint.h>
+          #include <sys/types.h>
+          struct iovec { void *iov_base; size_t iov_len; };
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          ssize_t readv(int fd, const struct iovec *iov, int iovcnt);
+          ssize_t writev(int fd, const struct iovec *iov, int iovcnt);
+          ssize_t preadv(int fd, const struct iovec *iov, int iovcnt, uint64_t offset);
+          ssize_t pwritev(int fd, const struct iovec *iov, int iovcnt, uint64_t offset);
+          #ifdef __cplusplus
+          }
+          #endif
+          #endif
+          EOF
+
+          cat > "$MINGW_ROOT/include/sys/ioctl.h" <<'EOF'
+          #ifndef COMPAT_SYS_IOCTL_H
+          #define COMPAT_SYS_IOCTL_H
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          int win32_ioctl(int fd, unsigned long req, ...);
+          #ifndef ioctl
+          #define ioctl win32_ioctl
+          #endif
+          #ifdef __cplusplus
+          }
+          #endif
+          #endif
+          EOF
+
+          cat > "$MINGW_ROOT/include/sys/mman.h" <<'EOF'
+          #ifndef COMPAT_SYS_MMAN_H
+          #define COMPAT_SYS_MMAN_H
+          #include <stddef.h>
+          #include <sys/types.h>
+          #define PROT_NONE  0x0
+          #define PROT_READ  0x1
+          #define PROT_WRITE 0x2
+          #define PROT_EXEC  0x4
+          #define MAP_SHARED    0x01
+          #define MAP_PRIVATE   0x02
+          #define MAP_ANONYMOUS 0x20
+          #define MAP_FAILED ((void *)-1)
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off);
+          int munmap(void *addr, size_t len);
+          int mprotect(void *addr, size_t len, int prot);
+          int madvise(void *addr, size_t len, int advice);
+          #ifdef __cplusplus
+          }
+          #endif
+          #endif
+          EOF
+
+          cat > "$MINGW_ROOT/include/sys/vfs.h" <<'EOF'
+          #ifndef COMPAT_SYS_VFS_H
+          #define COMPAT_SYS_VFS_H
+          #include <stdint.h>
+          struct statfs {
+              long f_type;
+              long f_bsize;
+              uint64_t f_blocks;
+              uint64_t f_bfree;
+              uint64_t f_bavail;
+              uint64_t f_files;
+              uint64_t f_ffree;
+              long f_fsid[2];
+              long f_namelen;
+              long f_frsize;
+              long f_flags;
+              long f_spare[4];
+          };
+          #endif
+          EOF
+
+          cat > "$MINGW_ROOT/include/sys/xattr.h" <<'EOF'
+          #ifndef COMPAT_SYS_XATTR_H
+          #define COMPAT_SYS_XATTR_H
+          #include <sys/types.h>
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          ssize_t getxattr(const char *path, const char *name, void *value, size_t size);
+          ssize_t lgetxattr(const char *path, const char *name, void *value, size_t size);
+          ssize_t fgetxattr(int fd, const char *name, void *value, size_t size);
+          ssize_t listxattr(const char *path, char *list, size_t size);
+          ssize_t llistxattr(const char *path, char *list, size_t size);
+          ssize_t flistxattr(int fd, char *list, size_t size);
+          int setxattr(const char *path, const char *name, const void *value, size_t size, int flags);
+          int lsetxattr(const char *path, const char *name, const void *value, size_t size, int flags);
+          int fsetxattr(int fd, const char *name, const void *value, size_t size, int flags);
+          #ifdef __cplusplus
+          }
+          #endif
+          #endif
+          EOF
+
+          cat > "$MINGW_ROOT/include/sys/sysmacros.h" <<'EOF'
+          #ifndef COMPAT_SYS_SYSMACROS_H
+          #define COMPAT_SYS_SYSMACROS_H
+          #define major(dev) ((int)(((unsigned int)(dev) >> 8) & 0xff))
+          #define minor(dev) ((int)((unsigned int)(dev) & 0xff))
+          #define makedev(maj, min) (((maj) << 8) | (min))
+          #endif
+          EOF
+
+          cat > "$MINGW_ROOT/include/linux/fs.h" <<'EOF'
+          #ifndef COMPAT_LINUX_FS_H
+          #define COMPAT_LINUX_FS_H
+          #define BLKGETSIZE64 0x80081272
+          #ifndef _IOR
+          #define _IOR(type,nr,size) ((unsigned long)0x80000000 | ((unsigned long)(type) << 8) | (nr))
+          #endif
+          #define FS_IOC_GETFLAGS _IOR('f', 1, long)
+          #endif
+          EOF
+
+          cat > "$MINGW_ROOT/include/linux/magic.h" <<'EOF'
+          #ifndef COMPAT_LINUX_MAGIC_H
+          #define COMPAT_LINUX_MAGIC_H
+          #define EROFS_SUPER_MAGIC_V1 0xE0F5E1E2
+          #endif
+          EOF
+
+          cat > "$MINGW_ROOT/include/endian.h" <<'EOF'
+          #ifndef COMPAT_ENDIAN_H
+          #define COMPAT_ENDIAN_H
+          #include <stdint.h>
+          #define __LITTLE_ENDIAN 1234
+          #define __BIG_ENDIAN 4321
+          #define __BYTE_ORDER __LITTLE_ENDIAN
+          #define htole16(x) (uint16_t)(x)
+          #define le16toh(x) (uint16_t)(x)
+          #define htole32(x) (uint32_t)(x)
+          #define le32toh(x) (uint32_t)(x)
+          #define htole64(x) (uint64_t)(x)
+          #define le64toh(x) (uint64_t)(x)
+          #define bswap_16(x) __builtin_bswap16(x)
+          #define bswap_32(x) __builtin_bswap32(x)
+          #define bswap_64(x) __builtin_bswap64(x)
+          #endif
+          EOF
+
+          cat > "$MINGW_ROOT/include/byteswap.h" <<'EOF'
+          #ifndef COMPAT_BYTESWAP_H
+          #define COMPAT_BYTESWAP_H
+          #include <endian.h>
+          #endif
+          EOF
+
+          cat > "$MINGW_ROOT/lib/mingw_compat.c" <<'EOF'
+          #ifdef _WIN32
+
+          #include <erofs/win32_compat.h>
+          #include <sys/uio.h>
+          #include <sys/mman.h>
+          #include <sys/xattr.h>
+
+          #include <stdarg.h>
+          #include <io.h>
+          #include <fcntl.h>
+          #include <errno.h>
+          #include <stdint.h>
+          #include <stdlib.h>
+          #include <string.h>
+
+          ssize_t pread(int fd, void *buf, size_t count, uint64_t offset)
+          {
+              __int64 old = _lseeki64(fd, 0, SEEK_CUR);
+              ssize_t ret;
+              if (old < 0) return -1;
+              if (_lseeki64(fd, (__int64)offset, SEEK_SET) < 0) return -1;
+              ret = read(fd, buf, count);
+              { int saved = errno; _lseeki64(fd, old, SEEK_SET); errno = saved; }
+              return ret;
+          }
+
+          ssize_t pwrite(int fd, const void *buf, size_t count, uint64_t offset)
+          {
+              __int64 old = _lseeki64(fd, 0, SEEK_CUR);
+              ssize_t ret;
+              if (old < 0) return -1;
+              if (_lseeki64(fd, (__int64)offset, SEEK_SET) < 0) return -1;
+              ret = write(fd, buf, count);
+              { int saved = errno; _lseeki64(fd, old, SEEK_SET); errno = saved; }
+              return ret;
+          }
+
+          int fsync(int fd) { return _commit(fd); }
+          int fdatasync(int fd) { return _commit(fd); }
+
+          int fstatfs(int fd, struct statfs *buf)
+          {
+              (void)fd;
+              if (buf) memset(buf, 0, sizeof(*buf));
+              errno = ENOTSUP;
+              return -1;
+          }
+
+          int ftruncate(int fd, off_t length)
+          {
+              if (_chsize_s(fd, (__int64)length) != 0) { errno = EIO; return -1; }
+              return 0;
+          }
+
+          int fallocate(int fd, int mode, uint64_t offset, uint64_t len)
+          {
+              (void)mode;
+              if (!len) return 0;
+              if (_chsize_s(fd, (__int64)(offset + len)) != 0) { errno = EIO; return -1; }
+              return 0;
+          }
+
+          int posix_fadvise(int fd, off_t offset, off_t len, int advice)
+          {
+              (void)fd; (void)offset; (void)len; (void)advice;
+              return 0;
+          }
+
+          ssize_t readv(int fd, const struct iovec *iov, int iovcnt)
+          {
+              ssize_t total = 0;
+              for (int i = 0; i < iovcnt; i++) {
+                  ssize_t n = read(fd, iov[i].iov_base, iov[i].iov_len);
+                  if (n < 0) return -1;
+                  total += n;
+                  if ((size_t)n < iov[i].iov_len) break;
+              }
+              return total;
+          }
+
+          ssize_t writev(int fd, const struct iovec *iov, int iovcnt)
+          {
+              ssize_t total = 0;
+              for (int i = 0; i < iovcnt; i++) {
+                  ssize_t n = write(fd, iov[i].iov_base, iov[i].iov_len);
+                  if (n < 0) return -1;
+                  total += n;
+                  if ((size_t)n < iov[i].iov_len) break;
+              }
+              return total;
+          }
+
+          ssize_t preadv(int fd, const struct iovec *iov, int iovcnt, uint64_t offset)
+          {
+              __int64 old = _lseeki64(fd, 0, SEEK_CUR);
+              ssize_t ret;
+              if (old < 0) return -1;
+              if (_lseeki64(fd, (__int64)offset, SEEK_SET) < 0) return -1;
+              ret = readv(fd, iov, iovcnt);
+              { int saved = errno; _lseeki64(fd, old, SEEK_SET); errno = saved; }
+              return ret;
+          }
+
+          ssize_t pwritev(int fd, const struct iovec *iov, int iovcnt, uint64_t offset)
+          {
+              __int64 old = _lseeki64(fd, 0, SEEK_CUR);
+              ssize_t ret;
+              if (old < 0) return -1;
+              if (_lseeki64(fd, (__int64)offset, SEEK_SET) < 0) return -1;
+              ret = writev(fd, iov, iovcnt);
+              { int saved = errno; _lseeki64(fd, old, SEEK_SET); errno = saved; }
+              return ret;
+          }
+
+          #define XATTR_STUB(fn, rettype, ...) \
+              rettype fn(__VA_ARGS__) { errno = ENOTSUP; return -1; }
+
+          XATTR_STUB(lgetxattr, ssize_t, const char *path, const char *name, void *value, size_t size)
+          XATTR_STUB(llistxattr, ssize_t, const char *path, char *list, size_t size)
+          XATTR_STUB(lsetxattr, int, const char *path, const char *name, const void *value, size_t size, int flags)
+          XATTR_STUB(fgetxattr, ssize_t, int fd, const char *name, void *value, size_t size)
+          XATTR_STUB(flistxattr, ssize_t, int fd, char *list, size_t size)
+          XATTR_STUB(fsetxattr, int, int fd, const char *name, const void *value, size_t size, int flags)
+
+          int symlink(const char *target, const char *linkpath)
+          { (void)target; (void)linkpath; errno = ENOTSUP; return -1; }
+
+          int mknod(const char *pathname, mode_t mode, dev_t dev)
+          { (void)pathname; (void)mode; (void)dev; errno = ENOTSUP; return -1; }
+
+          int mkfifo(const char *pathname, mode_t mode)
+          { (void)pathname; (void)mode; errno = ENOTSUP; return -1; }
+
+          int win32_ioctl(int fd, unsigned long req, ...)
+          { (void)fd; (void)req; errno = ENOTTY; return -1; }
+
+          void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off)
+          {
+              void *mem; __int64 old;
+              (void)addr; (void)prot; (void)flags;
+              if (!len || fd < 0) { errno = EINVAL; return MAP_FAILED; }
+              mem = malloc(len);
+              if (!mem) return MAP_FAILED;
+              old = _lseeki64(fd, 0, SEEK_CUR);
+              if (old < 0) { free(mem); return MAP_FAILED; }
+              if (_lseeki64(fd, off, SEEK_SET) < 0 || read(fd, mem, len) < 0) {
+                  int saved = errno;
+                  free(mem);
+                  _lseeki64(fd, old, SEEK_SET);
+                  errno = saved;
+                  return MAP_FAILED;
+              }
+              _lseeki64(fd, old, SEEK_SET);
+              return mem;
+          }
+
+          int munmap(void *addr, size_t len)
+          { (void)len; free(addr); return 0; }
+
+          int mprotect(void *addr, size_t len, int prot)
+          { (void)addr; (void)len; (void)prot; return 0; }
+
+          int madvise(void *addr, size_t len, int advice)
+          { (void)addr; (void)len; (void)advice; return 0; }
+
+          #endif /* _WIN32 */
+          EOF
+
+          x86_64-w64-mingw32-gcc -O2 \
+            -c "$MINGW_ROOT/lib/mingw_compat.c" \
+            -I"$MINGW_ROOT/include" \
+            -o "$MINGW_ROOT/lib/mingw_compat.o"
+
+          x86_64-w64-mingw32-ar rcs \
+            "$MINGW_ROOT/lib/libmingwcompat.a" \
+            "$MINGW_ROOT/lib/mingw_compat.o"
+
+      - name: Configure and build dump.erofs
+        run: |
+          set -euo pipefail
           cd erofs-utils
+
           [ -f configure ] || ./autogen.sh || autoreconf -fi
+
+          export PKG_CONFIG_PATH="$MINGW_ROOT/lib/pkgconfig:$PKG_CONFIG_PATH"
+
           ./configure \
-            --prefix=/mingw64 \
+            --host=x86_64-w64-mingw32 \
             --without-uuid \
             --disable-xattr \
-            --disable-fuse
-          make -C lib -j$(nproc)
-          make -C dump -j$(nproc) dump.erofs || make -C dump -j$(nproc) all
+            --disable-fuse \
+            CFLAGS="-O2 -Wno-error" \
+            CPPFLAGS="-I$MINGW_ROOT/include -D_WIN32 -D_FILE_OFFSET_BITS=64 -include erofs/win32_compat.h" \
+            LDFLAGS="-L$MINGW_ROOT/lib" \
+            LIBS="-lmingwcompat -llz4"
 
-          mkdir -p out
-          find dump -maxdepth 1 -type f -name 'dump.erofs*' -exec cp {} out/ \;
+          make -C lib -j"$(nproc)"
+          make -C dump -j"$(nproc)" dump.erofs || make -C dump -j"$(nproc)" all
+
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          find dump -maxdepth 1 -type f -name 'dump.erofs*' \
+            -exec cp {} "$GITHUB_WORKSPACE/out/" \;
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dump.erofs-windows-msys2
-          path: erofs-utils/out/dump.erofs*
+          name: dump.erofs-windows-mingw
+          path: out/dump.erofs*
