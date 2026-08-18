@@ -591,7 +591,7 @@ jobs:
 
           [ -f configure ] || ./autogen.sh || autoreconf -fi
 
-          export PKG_CONFIG_PATH="$MINGW_ROOT/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export PKG_CONFIG_PATH="$MINGW_ROOT/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
           ./configure \
             --host=x86_64-w64-mingw32 \
