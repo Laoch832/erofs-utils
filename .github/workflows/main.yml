@@ -21,8 +21,21 @@ jobs:
             git
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-autotools
-            mingw-w64-x86_64-liblz4
             mingw-w64-x86_64-zlib
+
+      - name: Install lz4 (try package, fallback to source build)
+        run: |
+          # 尝试使用 MSYS2 官方包安装 lz4
+          if pacman -S --noconfirm --needed mingw-w64-x86_64-lz4; then
+            echo "lz4 installed from pacman"
+          else
+            echo "pacman lz4 package not found, building from source"
+            git clone --depth=1 --branch v1.10.0 https://github.com/lz4/lz4.git lz4-src
+            cd lz4-src
+            make -C lib -j"$(nproc)"
+            make -C lib install PREFIX=/mingw64
+            cd ..
+          fi
 
       - name: Clone erofs-utils
         run: |
@@ -34,6 +47,8 @@ jobs:
         run: |
           cd erofs-utils
           [ -f configure ] || ./autogen.sh || autoreconf -fi
+
+          export PKG_CONFIG_PATH="/mingw64/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
           ./configure \
             --prefix=/mingw64 \
