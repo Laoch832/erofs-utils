@@ -2,10 +2,10 @@ name: Build Windows binaries
 
 on:
   push:
-    branches: [ "master" ]   # 如果主分支是 main，改为 "main"
+    branches: [ "master", "main" ]   # 兼容两种主分支名
   pull_request:
-    branches: [ "master" ]
-  workflow_dispatch:        # 允许手动触发
+    branches: [ "master", "main" ]
+  workflow_dispatch:                # 允许手动触发
 
 jobs:
   build-windows:
@@ -18,7 +18,7 @@ jobs:
       run: |
         sudo apt update
         sudo apt install -y autoconf automake libtool pkg-config \
-          liblz4-dev libzstd-dev liblzma-dev libuuid-dev \
+          liblz4-dev libzstd-dev liblzma-dev uuid-dev \
           gcc-mingw-w64-x86-64
 
     - name: Generate configure script
