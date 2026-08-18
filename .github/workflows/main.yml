@@ -24,12 +24,11 @@ jobs:
     - name: Generate configure script
       run: ./autogen.sh
 
-    - name: Configure for Windows cross-compile
-      # 手动指定 libuuid 的编译参数，绕过 pkg-config
+    - name: Configure for Windows cross-compile (disable uuid)
       run: |
-        ./configure --host=x86_64-w64-mingw32 \
-          libuuid_CFLAGS="-I/usr/x86_64-w64-mingw32/include" \
-          libuuid_LIBS="-L/usr/x86_64-w64-mingw32/lib -luuid"
+        export libuuid_CFLAGS=" "
+        export libuuid_LIBS=" "
+        ./configure --host=x86_64-w64-mingw32 --without-uuid
 
     - name: Build
       run: make -j$(nproc)
