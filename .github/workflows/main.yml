@@ -2,10 +2,10 @@ name: Build Windows binaries
 
 on:
   push:
-    branches: [ "master", "main" ]   # 兼容两种主分支名
+    branches: [ "master", "main" ]
   pull_request:
     branches: [ "master", "main" ]
-  workflow_dispatch:                # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build-windows:
@@ -25,7 +25,11 @@ jobs:
       run: ./autogen.sh
 
     - name: Configure for Windows cross-compile
-      run: ./configure --host=x86_64-w64-mingw32
+      # 手动指定 libuuid 的编译参数，绕过 pkg-config
+      run: |
+        ./configure --host=x86_64-w64-mingw32 \
+          libuuid_CFLAGS="-I/usr/x86_64-w64-mingw32/include" \
+          libuuid_LIBS="-L/usr/x86_64-w64-mingw32/lib -luuid"
 
     - name: Build
       run: make -j$(nproc)
