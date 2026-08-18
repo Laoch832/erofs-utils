@@ -1,0 +1,40 @@
+name: Build Windows binaries
+
+on:
+  push:
+    branches: [ "master" ]   # 如果主分支是 main，改为 "main"
+  pull_request:
+    branches: [ "master" ]
+  workflow_dispatch:        # 允许手动触发
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies and mingw-w64
+      run: |
+        sudo apt update
+        sudo apt install -y autoconf automake libtool pkg-config \
+          liblz4-dev libzstd-dev liblzma-dev libuuid-dev \
+          gcc-mingw-w64-x86-64
+
+    - name: Generate configure script
+      run: ./autogen.sh
+
+    - name: Configure for Windows cross-compile
+      run: ./configure --host=x86_64-w64-mingw32
+
+    - name: Build
+      run: make -j$(nproc)
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: erofs-utils-windows
+        path: |
+          dump/.libs/dump.erofs.exe
+          mkfs/.libs/mkfs.erofs.exe
+          fsck/.libs/fsck.erofs.exe
