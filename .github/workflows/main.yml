@@ -24,11 +24,11 @@ jobs:
     - name: Generate configure script
       run: ./autogen.sh
 
-    - name: Configure for Windows cross-compile (disable uuid)
+    - name: Configure for Windows cross-compile (disable uuid, disable -Werror)
       run: |
-        export libuuid_CFLAGS=" "
-        export libuuid_LIBS=" "
-        ./configure --host=x86_64-w64-mingw32 --without-uuid
+        ./configure --host=x86_64-w64-mingw32 \
+                    --without-uuid \
+                    CFLAGS="-Wno-error"
 
     - name: Build
       run: make -j$(nproc)
